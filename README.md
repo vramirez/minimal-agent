@@ -1,10 +1,20 @@
 # minimal-agent
 
 A tiny, from-scratch AI agent you can read top to bottom. No frameworks — just
-the official `anthropic` Python SDK and Claude's native tool-use API. It exists
-to make the **agent loop** obvious: ~150 lines of heavily-commented Python in
-`agent.py`, three tools in `tools.py`, and a deliberately messy CSV to reason
-over.
+an official LLM SDK and a native tool-use API. It exists to make the **agent
+loop** obvious: ~150 lines of heavily-commented Python, three tools in
+`tools.py`, and a deliberately messy CSV to reason over.
+
+There are two copies of the *same loop* so you can compare wire formats:
+
+| File | SDK / format | Backends | Notes |
+|------|--------------|----------|-------|
+| `agent.py` | `anthropic` (Claude native tool use) | real Claude API, LM Studio, any Anthropic-compatible gateway | the reference implementation |
+| `agent_openai.py` | `openai` (Chat Completions tool calls) | **local Ollama (free, no key)**, or any OpenAI-compatible server | runs free today |
+
+`diff agent.py agent_openai.py` to see exactly how the two providers' tool-use
+formats differ — the loop is identical; only the schema shape and message
+plumbing change. Both reuse the same `tools.py`.
 
 ## The agent loop, in one paragraph
 
@@ -63,12 +73,23 @@ model** on whichever backend you choose.
 
 ## Run
 
+**Free, local, no key (OpenAI format → Ollama):**
+```bash
+# Ollama running with a tool-capable model, e.g.:  ollama pull llama3.2
+python agent_openai.py "Are there any data quality issues in sample_data/sales.csv? Show me examples."
+```
+
+**Claude (anthropic format), once you've set a backend in `.env`:**
 ```bash
 python agent.py "Are there any data quality issues in sample_data/sales.csv? Show me examples."
 ```
 
 Watch the labeled output: `[MODEL]` (what it said) → `[TOOL CALL]` (which tool,
 with what args) → `[TOOL RESULT]` → next iteration, until `done`.
+
+> Note: a small local model (e.g. llama3.2 3B) drives the loop correctly but its
+> *analysis* is rough. Point `OPENAI_MODEL` at a larger local model, or use
+> `agent.py` with Claude, for sharper answers. The loop is the same either way.
 
 ## Sample data
 
