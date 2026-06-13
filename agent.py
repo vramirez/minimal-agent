@@ -1,49 +1,53 @@
 """A minimal AI agent you can read top to bottom.
 
-An "agent" is just a loop around the Messages API:
+An agent is just a loop around one API call:
 
-    1. Send the conversation (plus the list of tools) to the model.
-    2. Look at WHY the model stopped (`stop_reason`):
-         - "end_turn"  -> it's done talking; print the answer and exit.
-         - "tool_use"  -> it wants to run one or more tools. We run them,
-                          append the results to the conversation, and loop.
-    3. Repeat until it's done (or we hit a safety limit).
+    1. Send the conversation + the list of tools to the model.
+    2. Look at what the model did:
+         - it asked to call tools -> run them, append the results, loop.
+         - it just answered          -> print it and stop.
+    3. Repeat until done (or a safety limit).
 
-That's the entire idea. Everything below is bookkeeping around those steps.
-Run it with:
+The API is stateless, so WE hold the conversation history and resend it every
+turn. That send -> run-tool -> feed-result-back cycle is the whole idea.
+
+This talks the OpenAI Chat Completions format, which runs for **free** against a
+local Ollama model (no API key, no bridge). The tool *functions* live in
+tools.py; here we only handle the schemas and the message plumbing. Comments
+marked "vs Anthropic" point out where Claude's native tool-use format differs,
+since that's a common next thing to learn.
+
+Run it (Ollama must be running with a tool-capable model, e.g. llama3.2):
 
     python agent.py "your question here"
 
-Backend is whatever ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY / MODEL point at
-(see .env.example) — real Claude, a local LM Studio server, or a gateway.
+Config via env (.env): OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL.
+Note: reasoning-only models like deepseek-r1 do NOT support tool calling and
+will be rejected by Ollama — use a tool-capable model (llama3.2, qwen2.5, ...).
 """
 
+import json
 import os
 import sys
 
-import anthropic
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from tools import TOOLS, dispatch
 
-# Load ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / MODEL from a local .env file.
 load_dotenv()
 
-# The SDK reads ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL from the environment by
-# itself. That single fact is what lets us point the *same* code at Claude, a
-# local LM Studio server, or any Anthropic-compatible gateway with zero changes.
-client = anthropic.Anthropic()
+# Point the OpenAI SDK at a local Ollama server by default. Ollama exposes an
+# OpenAI-compatible API at /v1; it ignores the api_key but the SDK requires one.
+client = OpenAI(
+    base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+    api_key=os.getenv("OPENAI_API_KEY", "ollama"),
+)
 
-MODEL = os.getenv("MODEL", "claude-haiku-4-5")
-
-# Hard ceiling on loop iterations. Without this, a confused model could call
-# tools forever. Crash-early beats an infinite bill (Pragmatic tip: Crash Early).
+MODEL = os.getenv("OPENAI_MODEL", "llama3.2:latest")
 MAX_ITERATIONS = 10
-
-# Cap on tokens per response. Small is fine for this learning agent.
 MAX_TOKENS = 2048
 
-# A short system prompt steering the model toward using the tools.
 SYSTEM_PROMPT = (
     "You are a careful data analyst with access to a small set of tools for "
     "listing files, reading files, and querying CSVs with SQL (DuckDB). "
@@ -51,101 +55,108 @@ SYSTEM_PROMPT = (
     "When you find data quality problems, show concrete examples from the data."
 )
 
+# --- Tool schemas ------------------------------------------------------------
+# OpenAI wraps each tool as {"type": "function", "function": {name, description,
+# parameters}}. We derive that shape from the schemas in tools.py so the schema
+# lives in one place (DRY). (vs Anthropic: tools are {name, description,
+# input_schema} passed directly — no "function" wrapper.)
+OPENAI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    }
+    for t in TOOLS
+]
 
-def print_assistant_text(content_blocks) -> None:
-    """Print any plain-text the model produced this turn (its 'thinking out loud')."""
-    for block in content_blocks:
-        if block.type == "text" and block.text.strip():
-            print(f"\n[MODEL] {block.text.strip()}")
 
+def run_tool_calls(tool_calls) -> list:
+    """Execute each tool call and return matching 'tool' messages.
 
-def run_tool_calls(content_blocks) -> list:
-    """Execute every tool_use block and return matching tool_result blocks.
-
-    For each tool the model asked for we:
-      - print the call so you can watch it happen,
-      - run it (catching errors so one bad call doesn't kill the agent),
-      - print the result,
-      - build a tool_result block carrying that text back to the model.
-
-    Returning the error text with is_error=True (instead of crashing) is what
-    lets the agent self-correct: it sees the error and can try a different call.
+    OpenAI delivers tool arguments as a JSON *string* in `tc.function.arguments`,
+    so we json.loads() them. A tool result goes back as a message with role
+    "tool" carrying the `tool_call_id` it answers. (vs Anthropic: arguments
+    arrive as an already-parsed dict, and results go in a tool_result block with
+    a tool_use_id inside a user message.)
     """
-    results = []
-    for block in content_blocks:
-        if block.type != "tool_use":
-            continue
-
-        print(f"\n[TOOL CALL] {block.name}({block.input})")
+    messages = []
+    for tc in tool_calls:
+        args = json.loads(tc.function.arguments)
+        print(f"\n[TOOL CALL] {tc.function.name}({args})")
         try:
-            output = dispatch(block.name, block.input)
-            is_error = False
-        except Exception as exc:  # noqa: BLE001 - we deliberately surface ALL errors to the model
-            output = f"Error running {block.name}: {exc}"
-            is_error = True
+            output = dispatch(tc.function.name, args)
+        except Exception as exc:  # noqa: BLE001 - surface ALL errors back to the model
+            output = f"Error running {tc.function.name}: {exc}"
 
-        # Trim very long output in the console view (the model still gets it all).
         preview = output if len(output) < 800 else output[:800] + "\n...[truncated in console]"
-        label = "TOOL ERROR" if is_error else "TOOL RESULT"
-        print(f"[{label}] {preview}")
+        print(f"[TOOL RESULT] {preview}")
 
-        # A tool_result MUST reference the tool_use id it answers, so the model
-        # can match each result to the call it made.
-        results.append(
-            {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": output,
-                "is_error": is_error,
-            }
+        messages.append(
+            {"role": "tool", "tool_call_id": tc.id, "content": output}
         )
-    return results
+    return messages
 
 
 def run_agent(question: str) -> None:
     """Drive the agent loop for a single user question."""
-    # The conversation is just a growing list of messages we resend every turn;
-    # the Messages API is stateless, so WE hold the history.
-    messages = [{"role": "user", "content": question}]
+    # The system prompt is the first message. (vs Anthropic: it's passed as a
+    # separate `system=` argument instead of a message.)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
 
     for step in range(1, MAX_ITERATIONS + 1):
         print(f"\n===== iteration {step} =====")
 
-        # STEP 1: send the whole conversation plus the tool definitions.
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
+            tools=OPENAI_TOOLS,
             messages=messages,
         )
+        msg = response.choices[0].message
 
         # Show whatever the model said in words this turn.
-        print_assistant_text(response.content)
+        if msg.content and msg.content.strip():
+            print(f"\n[MODEL] {msg.content.strip()}")
 
-        # STEP 2: inspect WHY it stopped.
-        if response.stop_reason == "tool_use":
-            # The model wants tools. We MUST first append its turn (which
-            # contains the tool_use blocks) so the conversation stays coherent...
-            messages.append({"role": "assistant", "content": response.content})
-            # ...then run the tools and append their results as a user turn.
-            tool_results = run_tool_calls(response.content)
-            messages.append({"role": "user", "content": tool_results})
-            # Loop again so the model can read the results and continue.
+        # We branch on msg.tool_calls (finish_reason == "tool_calls"). (vs
+        # Anthropic: you check stop_reason == "tool_use".)
+        if msg.tool_calls:
+            # Append the assistant turn, including its tool_calls, BEFORE the
+            # results, so each result lines up with the call that produced it.
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": msg.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ],
+                }
+            )
+            messages.extend(run_tool_calls(msg.tool_calls))
             continue
 
-        # Any other stop_reason ("end_turn", "max_tokens", ...) means the model
-        # isn't asking for a tool, so this turn is the final answer. Stop.
-        print(f"\n===== done (stop_reason: {response.stop_reason}) =====")
+        # No tool calls -> this turn is the final answer.
+        print(f"\n===== done (finish_reason: {response.choices[0].finish_reason}) =====")
         return
 
-    # If we fall out of the for-loop, the model kept calling tools past our
-    # safety limit. Stop deliberately rather than looping forever.
     print(f"\n[SAFETY] Hit MAX_ITERATIONS ({MAX_ITERATIONS}). Stopping.")
 
 
 def main() -> None:
-    # Default to the data-quality prompt so `python agent.py` just works.
     default_question = (
         "Are there any data quality issues in sample_data/sales.csv? "
         "Show me examples."

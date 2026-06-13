@@ -1,32 +1,21 @@
 # minimal-agent
 
 A tiny, from-scratch AI agent you can read top to bottom. No frameworks — just
-an official LLM SDK and a native tool-use API. It exists to make the **agent
-loop** obvious: ~150 lines of heavily-commented Python, three tools in
-`tools.py`, and a deliberately messy CSV to reason over.
-
-There are two copies of the *same loop* so you can compare wire formats:
-
-| File | SDK / format | Backends | Notes |
-|------|--------------|----------|-------|
-| `agent.py` | `anthropic` (Claude native tool use) | real Claude API, LM Studio, any Anthropic-compatible gateway | the reference implementation |
-| `agent_openai.py` | `openai` (Chat Completions tool calls) | **local Ollama (free, no key)**, or any OpenAI-compatible server | runs free today |
-
-`diff agent.py agent_openai.py` to see exactly how the two providers' tool-use
-formats differ — the loop is identical; only the schema shape and message
-plumbing change. Both reuse the same `tools.py`.
+the official `openai` Python SDK and a native tool-use API, pointed at a **local
+Ollama model so it runs completely free, with no API key**. It exists to make
+the **agent loop** obvious: ~150 lines of heavily-commented Python in `agent.py`,
+three tools in `tools.py`, and a deliberately messy CSV to reason over.
 
 ## The agent loop, in one paragraph
 
 An agent is a loop around a single API call. You send the conversation plus a
-list of tool definitions to the model. The model replies and tells you *why it
-stopped* (`stop_reason`): if it stopped to **use a tool**, you run that tool,
-append the result to the conversation, and call the API again so the model can
-read the result and keep going; if it stopped with **`end_turn`**, it's done and
-you print the answer. Repeat until done (or until a safety limit). The API is
+list of tool definitions to the model. The model replies; you look at what it
+did. If it **asked to call tools** (`finish_reason == "tool_calls"`), you run
+those tools, append the results to the conversation, and call the API again so
+the model can read the results and keep going. If it **just answered**, it's
+done and you print it. Repeat until done (or until a safety limit). The API is
 stateless — *you* hold the conversation history and resend it every turn. That
-send-message → inspect-stop-reason → run-tool → feed-result-back cycle is the
-whole thing.
+send-message → run-tool → feed-result-back cycle is the whole thing.
 
 ## Setup
 
@@ -35,51 +24,28 @@ cd minimal-agent
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env      # then edit .env (see Backends below)
 ```
 
-## Backends (free first)
+## Backend: local Ollama (free, no key)
 
-The `anthropic` SDK reads `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL` from the
-environment, so you can point this exact code at any Anthropic-compatible
-endpoint by editing three values in `.env`. **Tool use requires a tool-capable
-model** on whichever backend you choose.
+1. Install [Ollama](https://ollama.com) and start it (it serves an
+   OpenAI-compatible API on `http://localhost:11434`).
+2. Pull a **tool-capable** model:
+   ```bash
+   ollama pull llama3.2
+   ```
+3. That's it — `agent.py` defaults to `http://localhost:11434/v1` and
+   `llama3.2:latest`, so no `.env` is needed. To override (different model or a
+   different OpenAI-compatible server like LM Studio), copy `.env.example` to
+   `.env` and set `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`.
 
-1. **LM Studio (free, local, offline) — the default.** Install
-   [LM Studio](https://lmstudio.ai), download a tool-capable model, and start
-   its local server. Then in `.env`:
-   ```
-   ANTHROPIC_BASE_URL=http://localhost:1234
-   ANTHROPIC_API_KEY=lm-studio        # any non-empty string; LM Studio ignores it
-   MODEL=<the model id shown in LM Studio>
-   ```
-
-2. **Hosted Anthropic-compatible gateway (free tier).** Some gateways expose an
-   Anthropic `/v1/messages` endpoint. Set:
-   ```
-   ANTHROPIC_BASE_URL=https://<gateway-host>
-   ANTHROPIC_API_KEY=<your gateway key>
-   MODEL=<a tool-capable model the gateway offers>
-   ```
-
-3. **Real Anthropic API.** Leave `ANTHROPIC_BASE_URL` unset to hit
-   `api.anthropic.com` directly:
-   ```
-   ANTHROPIC_API_KEY=sk-ant-...
-   MODEL=claude-haiku-4-5
-   ```
-
-`.env` is git-ignored — never commit your real key.
+> **Tool use needs a tool-capable model.** Reasoning-only models such as
+> `deepseek-r1` do **not** support tool calling — Ollama rejects them with
+> `does not support tools`. Use `llama3.2`, `qwen2.5`, `llama3.1`,
+> `mistral-nemo`, etc.
 
 ## Run
 
-**Free, local, no key (OpenAI format → Ollama):**
-```bash
-# Ollama running with a tool-capable model, e.g.:  ollama pull llama3.2
-python agent_openai.py "Are there any data quality issues in sample_data/sales.csv? Show me examples."
-```
-
-**Claude (anthropic format), once you've set a backend in `.env`:**
 ```bash
 python agent.py "Are there any data quality issues in sample_data/sales.csv? Show me examples."
 ```
@@ -87,9 +53,10 @@ python agent.py "Are there any data quality issues in sample_data/sales.csv? Sho
 Watch the labeled output: `[MODEL]` (what it said) → `[TOOL CALL]` (which tool,
 with what args) → `[TOOL RESULT]` → next iteration, until `done`.
 
-> Note: a small local model (e.g. llama3.2 3B) drives the loop correctly but its
-> *analysis* is rough. Point `OPENAI_MODEL` at a larger local model, or use
-> `agent.py` with Claude, for sharper answers. The loop is the same either way.
+> **Model quality note.** A small local model (e.g. `llama3.2` 3B) drives the
+> loop correctly but its *analysis* is rough. For sharper answers, pull a bigger
+> tool-capable model and set `OPENAI_MODEL`, e.g. `ollama pull qwen2.5` then
+> `OPENAI_MODEL=qwen2.5:latest`. The loop is identical either way.
 
 ## Sample data
 
@@ -113,11 +80,19 @@ duplicate `order_id` rows; negative quantities; and stray-character numerics
 
 ## Where to go next (exercises)
 
-1. **Streaming.** Swap `client.messages.create(...)` for `client.messages.stream(...)`
-   and print text deltas as they arrive, so you watch the model think in real time.
+1. **Streaming.** Pass `stream=True` to `client.chat.completions.create(...)` and
+   print the text deltas as they arrive, so you watch the model think in real time.
 2. **Conversation memory across runs.** Persist `messages` to a JSON file at the
    end of `run_agent` and reload it at the start, so a second `python agent.py`
    call continues the previous conversation.
 3. **A data-cleaning tool.** Add a fourth tool (e.g. `clean_csv`) that normalizes
    category casing/typos and writes a cleaned copy — then ask the agent to clean
    the data before analyzing it.
+
+## Note on tool-use formats
+
+This agent uses the OpenAI Chat Completions tool-calling format. Anthropic's
+Claude uses a slightly different native format (a `system=` argument,
+`input_schema` instead of a `function` wrapper, `stop_reason == "tool_use"`, and
+`tool_result` blocks). The `# vs Anthropic` comments in `agent.py` point out each
+difference, in case Claude is your next stop.

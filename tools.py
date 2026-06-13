@@ -1,9 +1,11 @@
-"""Tool implementations and their Anthropic tool schemas.
+"""Tool implementations and their JSON schemas.
 
 A "tool" here is two things glued together:
   1. A plain Python function that does the work.
   2. A JSON schema (in TOOLS) that tells the model the tool exists, what it
-     does, and what arguments it takes.
+     does, and what arguments it takes. agent.py wraps these schemas into the
+     OpenAI tool-calling shape; keeping them provider-neutral here means the
+     same definitions would also adapt to another provider's format.
 
 The model never runs our code. It only ever *asks* us to run a tool by name
 with some arguments; the agent loop (agent.py) does the actual calling. Keeping
