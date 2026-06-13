@@ -1,0 +1,10 @@
+# Secrets — never commit real API keys. Only .env.example (empty) is tracked.
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# DuckDB scratch files
+*.db
