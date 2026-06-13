@@ -44,7 +44,7 @@ client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY", "ollama"),
 )
 
-MODEL = os.getenv("OPENAI_MODEL", "llama3.2:latest")
+MODEL = os.getenv("OPENAI_MODEL", "qwen2.5:latest")
 MAX_ITERATIONS = 10
 MAX_TOKENS = 2048
 

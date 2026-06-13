@@ -32,10 +32,10 @@ pip install -r requirements.txt
    OpenAI-compatible API on `http://localhost:11434`).
 2. Pull a **tool-capable** model:
    ```bash
-   ollama pull llama3.2
+   ollama pull qwen2.5
    ```
 3. That's it — `agent.py` defaults to `http://localhost:11434/v1` and
-   `llama3.2:latest`, so no `.env` is needed. To override (different model or a
+   `qwen2.5:latest`, so no `.env` is needed. To override (different model or a
    different OpenAI-compatible server like LM Studio), copy `.env.example` to
    `.env` and set `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`.
 
@@ -53,10 +53,10 @@ python agent.py "Are there any data quality issues in sample_data/sales.csv? Sho
 Watch the labeled output: `[MODEL]` (what it said) → `[TOOL CALL]` (which tool,
 with what args) → `[TOOL RESULT]` → next iteration, until `done`.
 
-> **Model quality note.** A small local model (e.g. `llama3.2` 3B) drives the
-> loop correctly but its *analysis* is rough. For sharper answers, pull a bigger
-> tool-capable model and set `OPENAI_MODEL`, e.g. `ollama pull qwen2.5` then
-> `OPENAI_MODEL=qwen2.5:latest`. The loop is identical either way.
+> **Model quality note.** The default `qwen2.5` (7B) has strong tool use and
+> reasoning. A smaller model like `llama3.2` (3B) drives the loop correctly too
+> but its *analysis* is rougher — set `OPENAI_MODEL=llama3.2:latest` if you want
+> something lighter. The loop is identical either way.
 
 ## Sample data
 
@@ -78,6 +78,15 @@ duplicate `order_id` rows; negative quantities; and stray-character numerics
 - `python agent.py "Which customers spent the most? Watch out for messy names."`
 - `python agent.py "List the files in sample_data, then show me the first 5 rows of the CSV."`
 
+## Tests
+
+A stdlib-only smoke test exercises the tools against the sample CSV (no model,
+no network, no API key):
+
+```bash
+python test_tools.py
+```
+
 ## Where to go next (exercises)
 
 1. **Streaming.** Pass `stream=True` to `client.chat.completions.create(...)` and
@@ -96,3 +105,7 @@ Claude uses a slightly different native format (a `system=` argument,
 `input_schema` instead of a `function` wrapper, `stop_reason == "tool_use"`, and
 `tool_result` blocks). The `# vs Anthropic` comments in `agent.py` point out each
 difference, in case Claude is your next stop.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
